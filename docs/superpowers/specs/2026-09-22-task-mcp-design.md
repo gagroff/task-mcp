@@ -141,9 +141,11 @@ would rank `high` before `low` before `medium` — meaningless.
 ### Database location
 
 `~/.task-mcp/tasks.db`, created on first use. The path is overridden by
-the `TASK_MCP_DB` environment variable, which is how the server is
-pointed at a scratch database when running it by hand. Tests do not use
-it: they get a temporary database straight from the `conn` fixture.
+the `TASK_MCP_DB` environment variable. The two test layers reach a
+temporary database differently, because the two layers get their
+connection differently: `test_db.py` is handed one directly by the
+`conn` fixture, while `test_server.py` drives tools that open their
+own, so it sets `TASK_MCP_DB` to a `tmp_path` file instead.
 The database is deliberately outside the repository directory so task
 data cannot be committed.
 
