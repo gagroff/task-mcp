@@ -23,6 +23,10 @@ feature coverage.
 
 - Multi-user support, authentication, or remote hosting.
 - Recurring tasks, subtasks, projects, tags, or search.
+- Editing a task after creation. A task can be completed or deleted,
+  nothing more; fixing a title means deleting and re-adding. This keeps
+  the tool surface at four and is a deliberate scope cut, not an
+  oversight.
 - A web or graphical interface. The MCP client is the only front end.
 
 ## Success Criteria
@@ -97,10 +101,10 @@ its first argument so tests can pass a temporary database:
 | `insert_task(conn, TaskCreate)` | `Task` | Returns the row including its new id |
 | `fetch_tasks(conn, ...)` | `list[Task]` | Filters: `include_completed`, `priority`, `due_before` |
 | `fetch_task(conn, id)` | `Task \| None` | Used by callers needing existence checks |
-| `mark_complete(conn, id)` | `Task \| None` | `None` when the id does not exist |
-| `remove_task(conn, id)` | `bool` | `True` when a row was deleted |
+| `mark_complete(conn, id)` | `Task \| None` | `None` when the id does not exist; completing an already-completed task succeeds and returns it unchanged |
+| `remove_task(conn, id)` | `Task \| None` | The deleted task, or `None` when the id does not exist |
 
-Returning `None` and `bool` for missing rows — rather than raising —
+Returning `None` for missing rows — rather than raising —
 keeps `db.py` free of presentation concerns. Translating absence into a
 user-facing message is `server.py`'s job.
 
@@ -108,15 +112,20 @@ user-facing message is `server.py`'s job.
 
 ```sql
 CREATE TABLE IF NOT EXISTS tasks (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    id         INTEGER PRIMARY KEY,
     title      TEXT    NOT NULL,
     notes      TEXT,
-    priority   TEXT    NOT NULL DEFAULT 'medium',
+    priority   TEXT    NOT NULL,
     due_date   TEXT,
     completed  INTEGER NOT NULL DEFAULT 0,
     created_at TEXT    NOT NULL
 );
 ```
+
+`INTEGER PRIMARY KEY` is SQLite's rowid alias and supplies the ids;
+`AUTOINCREMENT` would only add a bookkeeping table we have no use for.
+`priority` has no SQL default because every write passes through
+Pydantic, which already supplies one — a single source of truth.
 
 SQLite has no native date or boolean type. Dates are stored as ISO 8601
 strings and booleans as `0`/`1`; Pydantic converts both at the module
@@ -132,13 +141,16 @@ would rank `high` before `low` before `medium` — meaningless.
 ### Database location
 
 `~/.task-mcp/tasks.db`, created on first use. The path is overridden by
-the `TASK_MCP_DB` environment variable, which tests use to point at a
-temporary file. The database is deliberately outside the repository
-directory so task data cannot be committed.
+the `TASK_MCP_DB` environment variable, which is how the server is
+pointed at a scratch database when running it by hand. Tests do not use
+it: they get a temporary database straight from the `conn` fixture.
+The database is deliberately outside the repository directory so task
+data cannot be committed.
 
 ### server.py
 
-A single `FastMCP` instance exposing four tools and one resource.
+A single `FastMCP` instance exposing four tools and one resource over
+stdio, which is the transport `claude mcp add` expects.
 Parameters are annotated with Pydantic types, which FastMCP converts
 into the JSON schema the client sees; docstrings become the tool
 descriptions the model reads when deciding what to call, and are
@@ -149,11 +161,29 @@ therefore written as interface documentation rather than as comments.
 | `add_task` | `title`, `notes=None`, `priority="medium"`, `due_date=None` | The created `Task` |
 | `list_tasks` | `include_completed=False`, `priority=None`, `due_before=None` | `list[Task]` |
 | `complete_task` | `task_id` | The updated `Task` |
-| `delete_task` | `task_id` | Confirmation string |
+| `delete_task` | `task_id` | The deleted `Task` |
 
-Resource `tasks://today` returns a plain-text agenda of tasks that are
-overdue or due today, grouped under those two headings, with an
-explicit message when there are none.
+All four tools return a model rather than prose, so the client sees one
+consistent shape.
+
+Resource `tasks://today` returns a plain-text agenda of open tasks that
+are overdue or due today, grouped under those two headings, with an
+explicit message when there are none. Completed tasks never appear.
+
+"Today" is the local calendar date, from `date.today()`. `due_date` is
+a date a person picked off their own calendar, so comparing it against
+local time is what matches their expectation; `created_at` is likewise
+local. The project never crosses a timezone, and a learning project is
+the wrong place to pay for one.
+
+#### Connection handling
+
+Each tool call opens a connection, does its work, and closes it. No
+connection is shared across calls or held on the module. This is more
+open/close work than a long-lived connection would do, and for a
+single-user to-do list that cost is invisible; in exchange there is no
+question of `sqlite3`'s `check_same_thread` rule, no state to reset
+between tests, and nothing to clean up on shutdown.
 
 ## Error Handling
 
@@ -162,8 +192,9 @@ Three tiers:
 1. **Invalid input** — a `priority` outside the enum, an empty title, an
    unparseable date. Rejected by Pydantic before the function body
    runs; FastMCP reports the validation error to the client.
-2. **Valid input, absent target** — `complete_task(999)` where no such
-   row exists. Raises `ToolError` with a message written for a reader:
+2. **Valid input, absent target** — `complete_task(999)` or
+   `delete_task(999)` where no such row exists. Both raise `ToolError`
+   with a message written for a reader:
    `"No task with id 999. Use list_tasks to see available tasks."`
    `ToolError` is the FastMCP exception whose message is intended to
    reach the client.
@@ -182,20 +213,21 @@ failing before its implementation.
 - `conftest.py` provides a `conn` fixture backed by `tmp_path`, giving
   every test a fresh database.
 - `test_db.py` covers the logic directly: round-tripping a task,
-  each filter in `fetch_tasks`, ordering, completing an existing and a
-  missing task, deleting an existing and a missing task, and date and
-  boolean conversion in both directions.
+  each filter in `fetch_tasks`, ordering, completing an existing, an
+  already-completed, and a missing task, deleting an existing and a
+  missing task, and date and boolean conversion in both directions.
 - `test_server.py` uses FastMCP's in-memory `Client`, which calls tools
   through the real MCP protocol without spawning a subprocess. It
   covers one success path per tool, the `ToolError` raised for a
-  missing id, rejection of an invalid priority, and the resource's
-  output including its empty case.
+  missing id by both `complete_task` and `delete_task`, rejection of an
+  invalid priority, and the resource's output including its empty case
+  and its exclusion of completed tasks.
 
 Run with `uv run pytest`.
 
 ## Repository Hygiene
 
-The repository is public at `github.com/gagroff`. It contains source,
+The repository is public at `github.com/gagroff/task-mcp`. It contains source,
 tests, configuration, and documentation — no data and no secrets. The
 project has no API keys, tokens, or credentials by design.
 
