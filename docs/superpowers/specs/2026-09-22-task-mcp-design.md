@@ -32,7 +32,8 @@ feature coverage.
 ## Success Criteria
 
 1. `uv run pytest` passes.
-2. The server registers with Claude Code via `claude mcp add`.
+2. The server registers with Claude Code via `claude mcp add` at user
+   scope, so the list is available from any directory.
 3. Asking Claude in natural language to add, list, and complete a task
    results in the correct rows in the database.
 4. `git status` is clean of database files before the first push, and
@@ -56,7 +57,10 @@ task-mcp/
 │   ├── db.py         # SQLite access — no MCP imports
 │   └── server.py     # FastMCP tools and resources — no SQL
 └── tests/
-    ├── conftest.py   # temp-database fixture
+    ├── __init__.py
+    ├── conftest.py   # temp-database fixtures
+    ├── test_scaffold.py
+    ├── test_models.py
     ├── test_db.py
     └── test_server.py
 ```
@@ -70,13 +74,15 @@ each file small enough to read in one sitting.
 ### models.py
 
 ```python
+Title = Annotated[str, Field(min_length=1, max_length=200)]
+
 class Priority(str, Enum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
 
 class TaskCreate(BaseModel):
-    title: str = Field(min_length=1, max_length=200)
+    title: Title
     notes: str | None = None
     priority: Priority = Priority.MEDIUM
     due_date: date | None = None
@@ -88,7 +94,9 @@ class Task(TaskCreate):
 ```
 
 `Task` extends `TaskCreate` because a stored task is a submitted task
-plus server-assigned fields. Validation rules are declared once.
+plus server-assigned fields. Validation rules are declared once: the
+`Title` alias is reused by the `add_task` tool signature, so the same
+length limits appear in the JSON schema the client sees.
 
 ### db.py
 
@@ -133,8 +141,9 @@ boundary, so no other code handles the encoding.
 
 Ordering for `fetch_tasks` is `completed ASC, due_date IS NULL ASC,
 due_date ASC, CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1
-ELSE 2 END`, so open work comes before completed, dated before undated,
-sooner before later, and higher priority first. The `CASE` expression is
+ELSE 2 END, id ASC`, so open work comes before completed, dated before
+undated, sooner before later, and higher priority first; `id` breaks any
+remaining tie so the order is deterministic. The `CASE` expression is
 necessary because priority is stored as text, and alphabetical order
 would rank `high` before `low` before `medium` — meaningless.
 
@@ -151,22 +160,24 @@ data cannot be committed.
 
 ### server.py
 
-A single `FastMCP` instance exposing four tools and one resource over
-stdio, which is the transport `claude mcp add` expects.
-Parameters are annotated with Pydantic types, which FastMCP converts
+A single `FastMCP` instance (FastMCP 4.x) exposing four tools and one
+resource over stdio, which is the transport `claude mcp add` expects.
+The instance is created with `mask_error_details=True`; see Error
+Handling. Parameters are annotated with Pydantic types, which FastMCP converts
 into the JSON schema the client sees; docstrings become the tool
 descriptions the model reads when deciding what to call, and are
 therefore written as interface documentation rather than as comments.
 
-| Tool | Parameters | Returns |
-|---|---|---|
-| `add_task` | `title`, `notes=None`, `priority="medium"`, `due_date=None` | The created `Task` |
-| `list_tasks` | `include_completed=False`, `priority=None`, `due_before=None` | `list[Task]` |
-| `complete_task` | `task_id` | The updated `Task` |
-| `delete_task` | `task_id` | The deleted `Task` |
+| Tool | Parameters | Returns | Annotation |
+|---|---|---|---|
+| `add_task` | `title`, `notes=None`, `priority="medium"`, `due_date=None` | The created `Task` | — |
+| `list_tasks` | `include_completed=False`, `priority=None`, `due_before=None` | `list[Task]` | `readOnlyHint` |
+| `complete_task` | `task_id` | The updated `Task` | `idempotentHint` |
+| `delete_task` | `task_id` | The deleted `Task` | `destructiveHint` |
 
 All four tools return a model rather than prose, so the client sees one
-consistent shape.
+consistent shape. The annotations are MCP tool hints that tell a client
+which calls are safe to make freely and which deserve confirmation.
 
 Resource `tasks://today` returns a plain-text agenda of open tasks that
 are overdue or due today, grouped under those two headings, with an
@@ -193,17 +204,23 @@ Three tiers:
 
 1. **Invalid input** — a `priority` outside the enum, an empty title, an
    unparseable date. Rejected by Pydantic before the function body
-   runs; FastMCP reports the validation error to the client.
+   runs; FastMCP reports the validation error to the client. This holds
+   only because the constraints live in the tool signature (via `Title`
+   and `Priority`), which also puts them in the advertised schema.
 2. **Valid input, absent target** — `complete_task(999)` or
    `delete_task(999)` where no such row exists. Both raise `ToolError`
    with a message written for a reader:
    `"No task with id 999. Use list_tasks to see available tasks."`
    `ToolError` is the FastMCP exception whose message is intended to
    reach the client.
-3. **Unexpected failures** — disk errors, corrupt database. Caught at
-   the tool boundary, logged, and re-raised as `ToolError` with a
-   generic message. Internal details are never leaked to the client,
-   and the server stays running.
+3. **Unexpected failures** — disk errors, corrupt database. Database
+   errors (`sqlite3.Error`, `OSError`) are caught at the tool boundary,
+   logged, and re-raised as `ToolError` with a generic message. Anything
+   else is caught by FastMCP's `mask_error_details=True`, which reports
+   only `Error calling tool '<name>'`. Without that setting FastMCP
+   forwards the raw exception message. Either way internal details are
+   never leaked to the client, and the server stays running. `ToolError`
+   messages are unaffected by masking.
 
 No tool returns a raw traceback.
 
@@ -213,7 +230,10 @@ Test-first throughout: each function's test is written and observed
 failing before its implementation.
 
 - `conftest.py` provides a `conn` fixture backed by `tmp_path`, giving
-  every test a fresh database.
+  every test a fresh database; a `temp_db` fixture points
+  `TASK_MCP_DB` at a `tmp_path` file for the server tests.
+- `test_models.py` covers defaults, title and priority validation, and
+  coercion of stored strings back into dates, datetimes, and booleans.
 - `test_db.py` covers the logic directly: round-tripping a task,
   each filter in `fetch_tasks`, ordering, completing an existing, an
   already-completed, and a missing task, deleting an existing and a
@@ -222,8 +242,12 @@ failing before its implementation.
   through the real MCP protocol without spawning a subprocess. It
   covers one success path per tool, the `ToolError` raised for a
   missing id by both `complete_task` and `delete_task`, rejection of an
-  invalid priority, and the resource's output including its empty case
-  and its exclusion of completed tasks.
+  invalid priority and an empty title, the title limits appearing in the
+  advertised schema, both tier-3 paths reporting no internal details,
+  and the resource's output including its empty case and its exclusion
+  of completed tasks. Tool results are read through `result.data`, which
+  FastMCP 4.x hydrates into an object with attribute access
+  (`result.data.title`), not a dict.
 
 Run with `uv run pytest`.
 
@@ -241,19 +265,29 @@ file alone.
 
 ## Build Sequence
 
-1. Scaffold with `uv init`; add `fastmcp` and dev dependency `pytest`.
+1. Scaffold with a hand-written `pyproject.toml` (src layout, hatchling)
+   and a placeholder `README.md`, which hatchling requires because the
+   manifest names it; add `fastmcp>=4,<5` and dev dependencies `pytest`
+   and `pytest-asyncio`.
 2. Write `.gitignore` and make the first commit.
 3. `models.py` with its validation tests.
 4. `db.py`, test-first, one function at a time.
 5. `server.py`, test-first, one tool at a time, then the resource.
 6. Register with Claude Code and smoke-test each tool by conversation.
-7. Write `README.md` covering install, run, test, and client setup.
+7. Replace the placeholder `README.md` with install, run, test, and
+   client setup.
 8. Create the public GitHub repository and push.
 
 ## Open Risks
 
 - **Windows path handling.** `~` expansion and directory creation are
   done with `pathlib.Path.home()` rather than string concatenation.
+  Shell commands in the README are given for both POSIX shells and
+  PowerShell where they differ (setting an environment variable).
+- **FastMCP API drift.** FastMCP's client API has changed between major
+  versions (in 2.x `result.data` was a dict; in 4.x it is a hydrated
+  object). The dependency is pinned to `>=4,<5` so the tests are
+  written against one known shape.
 - **Date parsing ambiguity.** Natural-language dates ("next Tuesday")
   are the client's responsibility to resolve; the tool accepts only
   ISO dates, and its docstring states this so the model converts before
