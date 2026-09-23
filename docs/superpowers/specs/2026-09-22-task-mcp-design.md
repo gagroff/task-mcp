@@ -36,8 +36,8 @@ feature coverage.
    scope, so the list is available from any directory.
 3. Asking Claude in natural language to add, list, and complete a task
    results in the correct rows in the database.
-4. `git status` is clean of database files before the first push, and
-   the pushed repository contains no personal data.
+4. `git status` is clean of database files, and no commit in the
+   history contains personal data, before the repository is made public.
 
 ## Architecture
 
@@ -253,15 +253,19 @@ Run with `uv run pytest`.
 
 ## Repository Hygiene
 
-The repository is public at `github.com/gagroff/task-mcp`. It contains source,
+The repository lives at `github.com/gagroff/task-mcp`. It is private
+while the project is being built and is made public once the
+pre-publish review below passes. It contains source,
 tests, configuration, and documentation — no data and no secrets. The
 project has no API keys, tokens, or credentials by design.
 
 `.gitignore` covers `__pycache__/`, `.venv/`, `*.db`, `*.db-journal`,
 `.env`, `.pytest_cache/`, and `.idea/`. `uv.lock` and `pyproject.toml`
-are committed. Before the first push, `git status --short` and
-`git ls-files` are reviewed manually rather than relying on the ignore
-file alone.
+are committed. Before the repository is made public, `git status
+--short` and `git ls-files` are reviewed manually rather than relying on
+the ignore file alone, and the full history is searched for database
+and `.env` files, since commits pushed while the repository was private
+become visible too.
 
 ## Build Sequence
 
@@ -276,7 +280,8 @@ file alone.
 6. Register with Claude Code and smoke-test each tool by conversation.
 7. Replace the placeholder `README.md` with install, run, test, and
    client setup.
-8. Create the public GitHub repository and push.
+8. Push to the existing private GitHub repository, run the pre-publish
+   review, and switch it to public.
 
 ## Open Risks
 
