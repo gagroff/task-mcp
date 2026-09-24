@@ -2,10 +2,10 @@
 
 import os
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
-from task_mcp.models import Task, TaskCreate
+from task_mcp.models import Priority, Task, TaskCreate
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -66,3 +66,37 @@ def insert_task(conn: sqlite3.Connection, task: TaskCreate) -> Task:
     created = fetch_task(conn, int(cursor.lastrowid))
     assert created is not None  # the row was inserted on the line above
     return created
+
+
+_ORDER_BY = """
+ORDER BY completed ASC,
+         due_date IS NULL ASC,
+         due_date ASC,
+         CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+         id ASC
+"""
+
+
+def fetch_tasks(
+    conn: sqlite3.Connection,
+    *,
+    include_completed: bool = False,
+    priority: Priority | None = None,
+    due_before: date | None = None,
+) -> list[Task]:
+    """Return tasks matching the filters, most urgent first."""
+    clauses: list[str] = []
+    params: list[object] = []
+
+    if not include_completed:
+        clauses.append("completed = 0")
+    if priority is not None:
+        clauses.append("priority = ?")
+        params.append(Priority(priority).value)
+    if due_before is not None:
+        clauses.append("due_date IS NOT NULL AND due_date < ?")
+        params.append(due_before.isoformat())
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = conn.execute(f"SELECT * FROM tasks {where} {_ORDER_BY}", params).fetchall()
+    return [_to_task(row) for row in rows]

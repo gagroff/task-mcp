@@ -89,3 +89,70 @@ def test_insert_persists_across_connections(conn, tmp_path):
 
 def test_fetch_missing_task_returns_none(conn):
     assert db.fetch_task(conn, 999) is None
+
+
+def test_completed_tasks_are_hidden_by_default(conn):
+    open_task = db.insert_task(conn, TaskCreate(title="Open"))
+    done = db.insert_task(conn, TaskCreate(title="Done"))
+    conn.execute("UPDATE tasks SET completed = 1 WHERE id = ?", (done.id,))
+    conn.commit()
+
+    assert [t.id for t in db.fetch_tasks(conn)] == [open_task.id]
+    assert len(db.fetch_tasks(conn, include_completed=True)) == 2
+
+
+def test_priority_filter(conn):
+    db.insert_task(conn, TaskCreate(title="Low", priority=Priority.LOW))
+    high = db.insert_task(conn, TaskCreate(title="High", priority=Priority.HIGH))
+
+    found = db.fetch_tasks(conn, priority=Priority.HIGH)
+
+    assert [t.id for t in found] == [high.id]
+
+
+def test_due_before_filter_excludes_undated_tasks(conn):
+    soon = db.insert_task(conn, TaskCreate(title="Soon", due_date=date(2026, 1, 1)))
+    db.insert_task(conn, TaskCreate(title="Later", due_date=date(2026, 12, 1)))
+    db.insert_task(conn, TaskCreate(title="Someday"))
+
+    found = db.fetch_tasks(conn, due_before=date(2026, 6, 1))
+
+    assert [t.id for t in found] == [soon.id]
+
+
+def test_due_before_is_exclusive(conn):
+    db.insert_task(conn, TaskCreate(title="On the day", due_date=date(2026, 6, 1)))
+
+    assert db.fetch_tasks(conn, due_before=date(2026, 6, 1)) == []
+
+
+def test_ordering(conn):
+    # Inserted in deliberately wrong order; the expected order is the rule below.
+    undated_low = db.insert_task(
+        conn, TaskCreate(title="Undated low", priority=Priority.LOW)
+    )
+    undated_high = db.insert_task(
+        conn, TaskCreate(title="Undated high", priority=Priority.HIGH)
+    )
+    later = db.insert_task(conn, TaskCreate(title="Later", due_date=date(2026, 12, 1)))
+    sooner = db.insert_task(conn, TaskCreate(title="Sooner", due_date=date(2026, 1, 1)))
+
+    order = [t.id for t in db.fetch_tasks(conn)]
+
+    # Dated before undated, sooner before later, then high before low.
+    assert order == [sooner.id, later.id, undated_high.id, undated_low.id]
+
+
+def test_completed_tasks_sort_last(conn):
+    done = db.insert_task(conn, TaskCreate(title="Done", due_date=date(2026, 1, 1)))
+    conn.execute("UPDATE tasks SET completed = 1 WHERE id = ?", (done.id,))
+    conn.commit()
+    open_task = db.insert_task(conn, TaskCreate(title="Open", due_date=date(2026, 12, 1)))
+
+    order = [t.id for t in db.fetch_tasks(conn, include_completed=True)]
+
+    assert order == [open_task.id, done.id]
+
+
+def test_empty_database_returns_an_empty_list(conn):
+    assert db.fetch_tasks(conn) == []
