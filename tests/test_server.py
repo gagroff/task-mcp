@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from fastmcp import Client
@@ -132,3 +132,58 @@ async def test_delete_missing_task_raises_a_readable_error(client):
         await client.call_tool("delete_task", {"task_id": 999})
 
     assert "999" in str(excinfo.value)
+
+
+async def read_agenda(client) -> str:
+    contents = await client.read_resource("tasks://today")
+    return contents[0].text
+
+
+async def test_agenda_groups_overdue_and_due_today(client):
+    today = date.today()
+    await client.call_tool(
+        "add_task",
+        {"title": "Overdue thing", "due_date": (today - timedelta(days=3)).isoformat()},
+    )
+    await client.call_tool(
+        "add_task", {"title": "Today thing", "due_date": today.isoformat()}
+    )
+
+    agenda = await read_agenda(client)
+
+    assert "Overdue:" in agenda
+    assert "Overdue thing" in agenda
+    assert "Due today:" in agenda
+    assert "Today thing" in agenda
+    assert agenda.index("Overdue:") < agenda.index("Due today:")
+
+
+async def test_agenda_omits_future_and_undated_tasks(client):
+    today = date.today()
+    await client.call_tool(
+        "add_task",
+        {"title": "Next month", "due_date": (today + timedelta(days=30)).isoformat()},
+    )
+    await client.call_tool("add_task", {"title": "Someday"})
+
+    agenda = await read_agenda(client)
+
+    assert "Next month" not in agenda
+    assert "Someday" not in agenda
+
+
+async def test_agenda_omits_completed_tasks(client):
+    created = await client.call_tool(
+        "add_task", {"title": "Already done", "due_date": date.today().isoformat()}
+    )
+    await client.call_tool("complete_task", {"task_id": created.data.id})
+
+    agenda = await read_agenda(client)
+
+    assert "Already done" not in agenda
+
+
+async def test_agenda_says_so_when_there_is_nothing(client):
+    agenda = await read_agenda(client)
+
+    assert "Nothing" in agenda

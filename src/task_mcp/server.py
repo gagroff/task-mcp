@@ -4,7 +4,7 @@ import logging
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, timedelta
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -127,6 +127,37 @@ def delete_task(task_id: int) -> Task:
         if removed is None:
             raise _missing(task_id)
         return removed
+
+
+def _format(task: Task, show_date: bool) -> str:
+    due = f", due {task.due_date.isoformat()}" if show_date else ""
+    return f"  [{task.id}] {task.title} ({task.priority.value}{due})"
+
+
+@mcp.resource("tasks://today")
+def todays_agenda() -> str:
+    """Open tasks that are overdue or due today, as a plain-text agenda."""
+    today = date.today()
+    with _connection() as conn:
+        # Everything due strictly before tomorrow is either overdue or due today.
+        tasks = db.fetch_tasks(conn, due_before=today + timedelta(days=1))
+
+    overdue = [task for task in tasks if task.due_date < today]
+    due_today = [task for task in tasks if task.due_date == today]
+
+    if not overdue and not due_today:
+        return "Nothing is overdue or due today."
+
+    lines: list[str] = []
+    if overdue:
+        lines.append("Overdue:")
+        lines.extend(_format(task, show_date=True) for task in overdue)
+    if due_today:
+        if lines:
+            lines.append("")
+        lines.append("Due today:")
+        lines.extend(_format(task, show_date=False) for task in due_today)
+    return "\n".join(lines)
 
 
 def main() -> None:
