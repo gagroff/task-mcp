@@ -100,3 +100,22 @@ def fetch_tasks(
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     rows = conn.execute(f"SELECT * FROM tasks {where} {_ORDER_BY}", params).fetchall()
     return [_to_task(row) for row in rows]
+
+
+def mark_complete(conn: sqlite3.Connection, task_id: int) -> Task | None:
+    """Mark a task complete and return it. Already-complete tasks are fine."""
+    if fetch_task(conn, task_id) is None:
+        return None
+    conn.execute("UPDATE tasks SET completed = 1 WHERE id = ?", (task_id,))
+    conn.commit()
+    return fetch_task(conn, task_id)
+
+
+def remove_task(conn: sqlite3.Connection, task_id: int) -> Task | None:
+    """Delete a task and return what was deleted, or None if there was none."""
+    existing = fetch_task(conn, task_id)
+    if existing is None:
+        return None
+    conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    conn.commit()
+    return existing

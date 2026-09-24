@@ -156,3 +156,39 @@ def test_completed_tasks_sort_last(conn):
 
 def test_empty_database_returns_an_empty_list(conn):
     assert db.fetch_tasks(conn) == []
+
+
+def test_mark_complete_returns_the_updated_task(conn):
+    created = db.insert_task(conn, TaskCreate(title="Buy milk"))
+
+    updated = db.mark_complete(conn, created.id)
+
+    assert updated.completed is True
+    assert updated.id == created.id
+    assert db.fetch_task(conn, created.id).completed is True
+
+
+def test_mark_complete_is_idempotent(conn):
+    created = db.insert_task(conn, TaskCreate(title="Buy milk"))
+    first = db.mark_complete(conn, created.id)
+
+    second = db.mark_complete(conn, created.id)
+
+    assert second == first
+
+
+def test_mark_complete_missing_returns_none(conn):
+    assert db.mark_complete(conn, 999) is None
+
+
+def test_remove_returns_the_deleted_task(conn):
+    created = db.insert_task(conn, TaskCreate(title="Buy milk"))
+
+    removed = db.remove_task(conn, created.id)
+
+    assert removed == created
+    assert db.fetch_task(conn, created.id) is None
+
+
+def test_remove_missing_returns_none(conn):
+    assert db.remove_task(conn, 999) is None
