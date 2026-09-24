@@ -89,6 +89,46 @@ def list_tasks(
         )
 
 
+def _missing(task_id: int) -> ToolError:
+    """The one message for an id that is well-formed but matches no row."""
+    return ToolError(
+        f"No task with id {task_id}. Use list_tasks to see available tasks."
+    )
+
+
+@mcp.tool(annotations={"idempotentHint": True})
+def complete_task(task_id: int) -> Task:
+    """Mark a task as done.
+
+    Args:
+        task_id: The id of the task, as shown by list_tasks.
+
+    Completing an already-completed task succeeds and changes nothing.
+    """
+    with _connection() as conn:
+        updated = db.mark_complete(conn, task_id)
+        if updated is None:
+            raise _missing(task_id)
+        return updated
+
+
+@mcp.tool(annotations={"destructiveHint": True})
+def delete_task(task_id: int) -> Task:
+    """Delete a task permanently and return what was deleted.
+
+    Args:
+        task_id: The id of the task, as shown by list_tasks.
+
+    There is no undo. There is also no way to edit a task — deleting it and
+    adding it again is how a task gets changed.
+    """
+    with _connection() as conn:
+        removed = db.remove_task(conn, task_id)
+        if removed is None:
+            raise _missing(task_id)
+        return removed
+
+
 def main() -> None:
     """Entry point for the `task-mcp` console script; serves over stdio."""
     mcp.run()

@@ -90,3 +90,45 @@ async def test_unexpected_errors_are_masked(client, monkeypatch):
         await client.call_tool("list_tasks", {})
 
     assert "private" not in str(excinfo.value)
+
+
+async def test_complete_task_marks_it_done(client):
+    created = await client.call_tool("add_task", {"title": "Buy milk"})
+
+    result = await client.call_tool("complete_task", {"task_id": created.data.id})
+
+    assert result.data.completed is True
+
+
+async def test_completed_task_disappears_from_the_default_list(client):
+    created = await client.call_tool("add_task", {"title": "Buy milk"})
+    await client.call_tool("complete_task", {"task_id": created.data.id})
+
+    result = await client.call_tool("list_tasks", {})
+
+    assert result.data == []
+
+
+async def test_complete_missing_task_raises_a_readable_error(client):
+    with pytest.raises(ToolError) as excinfo:
+        await client.call_tool("complete_task", {"task_id": 999})
+
+    assert "999" in str(excinfo.value)
+    assert "list_tasks" in str(excinfo.value)
+
+
+async def test_delete_task_returns_the_deleted_task(client):
+    created = await client.call_tool("add_task", {"title": "Buy milk"})
+
+    result = await client.call_tool("delete_task", {"task_id": created.data.id})
+
+    assert result.data.title == "Buy milk"
+    listed = await client.call_tool("list_tasks", {})
+    assert listed.data == []
+
+
+async def test_delete_missing_task_raises_a_readable_error(client):
+    with pytest.raises(ToolError) as excinfo:
+        await client.call_tool("delete_task", {"task_id": 999})
+
+    assert "999" in str(excinfo.value)
